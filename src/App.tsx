@@ -242,6 +242,7 @@ function ContactsPage() {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [walletAddress, setWalletAddress] = useState('')
+  const [email, setEmail] = useState('')
   const [notes, setNotes] = useState('')
   const [showForm, setShowForm] = useState(false)
 
@@ -254,11 +255,12 @@ function ContactsPage() {
   })
 
   const createMutation = useMutation({
-    mutationFn: async (data: { name: string; walletAddress: string; notes: string }) => {
+    mutationFn: async (data: { name: string; walletAddress: string; email: string; notes: string }) => {
       const contact = {
         id: generateId(),
         name: data.name,
         walletAddress: data.walletAddress || undefined,
+        email: data.email || undefined,
         notes: data.notes || undefined,
         createdAt: new Date().toISOString()
       }
@@ -269,6 +271,7 @@ function ContactsPage() {
       queryClient.invalidateQueries({ queryKey: ['contacts'] })
       setName('')
       setWalletAddress('')
+      setEmail('')
       setNotes('')
       setShowForm(false)
       toast.success('Contact created successfully!')
@@ -291,7 +294,7 @@ function ContactsPage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
-    createMutation.mutate({ name, walletAddress, notes })
+    createMutation.mutate({ name, walletAddress, email, notes })
   }
 
   return (
@@ -334,6 +337,18 @@ function ContactsPage() {
                   onChange={(e) => setWalletAddress(e.target.value)}
                   className="w-full px-4 py-2 border border-border rounded-lg bg-background text-foreground font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   placeholder="0x123... (optional)"
+                />
+              </div>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Email Address</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-2 border border-border rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  placeholder="john@example.com (optional)"
                 />
               </div>
             </div>
@@ -401,6 +416,11 @@ function ContactsPage() {
                   {contact.walletAddress}
                 </p>
               )}
+              {contact.email && (
+                <p className="text-sm text-muted-foreground mt-1 truncate">
+                  {contact.email}
+                </p>
+              )}
               {contact.notes && (
                 <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{contact.notes}</p>
               )}
@@ -423,42 +443,15 @@ function SendPage() {
   const [amount, setAmount] = useState('')
   const [message, setMessage] = useState('')
   const [customCoin, setCustomCoin] = useState('')
-  const [showPreview, setShowPreview] = useState(false)
+  const [sendToEmail, setSendToEmail] = useState(false)
+  const [emailTo, setEmailTo] = useState('')
+  const [isSending, setIsSending] = useState(false)
 
   const { data: contacts = [] } = useQuery({
     queryKey: ['contacts'],
     queryFn: async () => {
       const result = await blink.db.contacts.list()
       return result as Contact[]
-    }
-  })
-
-  const createMutation = useMutation({
-    mutationFn: async (data: { recipientName: string; coinType: string; amount: string; message: string }) => {
-      const transaction = {
-        id: generateId(),
-        recipientName: data.recipientName,
-        coinType: data.coinType,
-        amount: data.amount,
-        message: data.message,
-        status: 'simulated',
-        createdAt: new Date().toISOString()
-      }
-      await blink.db.transactions.create(transaction)
-      return transaction
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] })
-      toast.success('Notification sent successfully!')
-      setSelectedContact('')
-      setCoinType('BTC')
-      setAmount('')
-      setMessage('')
-      setCustomCoin('')
-      setShowPreview(false)
-    },
-    onError: () => {
-      toast.error('Failed to send notification')
     }
   })
 
@@ -469,16 +462,77 @@ function SendPage() {
     setMessage(generateMessage(finalCoin, amount, contact?.name || 'Unknown'))
   }
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!selectedContact || !amount || !message) return
     const contact = contacts.find(c => c.id === selectedContact)
     const finalCoin = coinType === 'Custom' ? customCoin : coinType
-    createMutation.mutate({
+    
+    // Determine email recipient
+    const emailRecipient = sendToEmail ? (emailTo || contact?.email) : null
+    
+    // Save transaction to database
+    const transaction = {
+      id: generateId(),
       recipientName: contact?.name || 'Unknown',
       coinType: finalCoin,
       amount,
-      message
-    })
+      message,
+      status: 'sent',
+      createdAt: new Date().toISOString()
+    }
+    await blink.db.transactions.create(transaction)
+    
+    // Send email if enabled and email address is available
+    if (emailRecipient) {
+      setIsSending(true)
+      try {
+        await blink.notifications.email({
+          to: emailRecipient,
+          subject: `Crypto Transaction Alert - ${amount} ${finalCoin}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <div style="background: linear-gradient(135deg, #F7931A, #FF9500); padding: 20px; text-align: center;">
+                <h1 style="color: white; margin: 0;">Crypto Wallet</h1>
+              </div>
+              <div style="padding: 20px; background: #f5f5f5;">
+                <h2 style="color: #333;">Transaction Alert</h2>
+                <div style="background: white; padding: 20px; border-radius: 8px; margin: 15px 0;">
+                  <p style="color: #666; margin: 0 0 10px 0;">You have received</p>
+                  <p style="font-size: 32px; font-weight: bold; color: #F7931A; margin: 0;">${amount} ${finalCoin}</p>
+                  <p style="color: #666; margin: 10px 0 0 0;">${(parseFloat(amount) * 67000).toLocaleString()} USD</p>
+                </div>
+                <div style="background: white; padding: 15px; border-radius: 8px;">
+                  <p style="margin: 5px 0;"><strong>Recipient:</strong> ${contact?.name || 'Unknown'}</p>
+                  <p style="margin: 5px 0;"><strong>Network:</strong> ${COIN_NETWORKS[finalCoin] || 'Custom Network'}</p>
+                  <p style="margin: 5px 0;"><strong>Status:</strong> Pending Confirmation</p>
+                  <p style="margin: 5px 0;"><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+                </div>
+                <p style="color: #999; font-size: 12px; margin-top: 20px;">
+                  This is a simulated notification for testing purposes.
+                </p>
+              </div>
+            </div>
+          `,
+          text: message
+        })
+        toast.success(`Notification sent to ${emailRecipient}!`)
+      } catch (emailError) {
+        console.error('Email error:', emailError)
+        toast.error('Saved but failed to send email')
+      } finally {
+        setIsSending(false)
+      }
+    }
+    
+    queryClient.invalidateQueries({ queryKey: ['transactions'] })
+    toast.success('Notification sent successfully!')
+    setSelectedContact('')
+    setCoinType('BTC')
+    setAmount('')
+    setMessage('')
+    setCustomCoin('')
+    setSendToEmail(false)
+    setEmailTo('')
   }
 
   const selectedContactData = contacts.find(c => c.id === selectedContact)
@@ -557,6 +611,39 @@ function SendPage() {
               >
                 Generate Auto Message
               </button>
+
+              {/* Email Option */}
+              <div className="border border-border rounded-lg p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="sendToEmail"
+                    checked={sendToEmail}
+                    onChange={(e) => setSendToEmail(e.target.checked)}
+                    className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                  />
+                  <label htmlFor="sendToEmail" className="text-sm font-medium text-foreground">
+                    Send to Email
+                  </label>
+                </div>
+                
+                {sendToEmail && (
+                  <div>
+                    <input
+                      type="email"
+                      value={emailTo}
+                      onChange={(e) => setEmailTo(e.target.value)}
+                      className="w-full px-4 py-2 border border-border rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      placeholder={selectedContactData?.email || "recipient@email.com"}
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {selectedContactData?.email 
+                        ? `Will use contact's email: ${selectedContactData.email}` 
+                        : "Enter email address"}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -589,6 +676,11 @@ function SendPage() {
                     <div>
                       <p className="font-display font-bold text-foreground text-lg">{amount} {finalCoin}</p>
                       <p className="text-sm text-muted-foreground">to {selectedContactData?.name}</p>
+                      {sendToEmail && (emailTo || selectedContactData?.email) && (
+                        <p className="text-xs text-green-600 mt-1">
+                          Email: {emailTo || selectedContactData?.email}
+                        </p>
+                      )}
                     </div>
                   </div>
                   
@@ -601,11 +693,11 @@ function SendPage() {
 
                 <button
                   onClick={handleSend}
-                  disabled={!isValid || createMutation.isPending}
+                  disabled={!isValid || isSending}
                   className="w-full py-3 bg-primary text-primary-foreground rounded-xl font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   <Send className="w-5 h-5" />
-                  {createMutation.isPending ? 'Sending...' : 'Send Notification'}
+                  {isSending ? 'Sending...' : 'Send Notification'}
                 </button>
 
                 <p className="text-xs text-center text-muted-foreground">
